@@ -52,13 +52,13 @@ def main(n_splits=8):
         if images[uid] is not None
     ]
 
-    five_fold_datalist = {}
+    k_fold_datalist = {}
 
     for k, (_, fold) in enumerate(KFold(n_splits=n_splits, shuffle=True, random_state=42).split(datalist)):
-        five_fold_datalist[f"fold_{k}"] = [datalist[i] for i in fold]
+        k_fold_datalist[f"fold_{k}"] = [datalist[i] for i in fold]
 
     with open("/neodata/oxr/tmuh/datalist_b.json", 'w') as fp:
-        json.dump(five_fold_datalist, fp, indent=4)
+        json.dump(k_fold_datalist, fp, indent=4)
 
 if __name__ == "__main__":
     main()
