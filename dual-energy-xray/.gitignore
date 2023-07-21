@@ -1,9 +1,0 @@
-data
-lightning_logs
-manafaln
-playground.py
-*.dcm
-*.png
-*.csv
-*.ckpt
-*__pycache__*
