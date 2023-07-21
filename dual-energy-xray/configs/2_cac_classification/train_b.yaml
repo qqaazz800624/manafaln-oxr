@@ -1,0 +1,377 @@
+trainer:
+  settings:
+    accelerator: gpu
+    devices: [1]
+
+    max_epochs: &max_epochs 30
+
+  callbacks:
+    - name: ModelCheckpoint
+      args:
+        filename: best_model
+        monitor: val_auc
+        mode: max
+        save_last: True
+        save_top_k: 1
+
+workflow:
+  name: SupervisedLearningV2
+
+  settings:
+    scheduler:
+      interval: epoch
+      frequency: 1
+
+  components:
+    model:
+      # name: DenseNet121
+      # args:
+      #   spatial_dims: 2
+      #   in_channels: 3
+      #   out_channels: 1
+      #   pretrained: True
+      #   dropout_prob: 0.1
+      name: EfficientNetBN
+      args:
+        model_name: efficientnet-b1 # efficientnet-b0
+        in_channels: 3
+        num_classes: 1
+        spatial_dims: 2
+        pretrained: True
+
+    loss:
+    - name: BCELoss
+
+    optimizer:
+      name: AdamW
+      args:
+        lr: 3.0e-4
+        weight_decay: 1.0e-5
+
+    scheduler:
+      name: CosineAnnealingWarmRestarts
+      args:
+        T_0: *max_epochs
+
+    post_processing:
+      - name: Activationsd
+        args:
+          keys: preds
+          sigmoid: True
+
+    post_transforms:
+      validation:
+      - name: Activationsd
+        args:
+          keys: preds
+          sigmoid: True
+
+    metrics:
+      training:
+      - name: AUROC
+        log_label: train_auc
+        args:
+          task: binary
+
+      validation:
+      - name: AUROC
+        log_label: val_auc
+        args:
+          task: binary
+
+data:
+  name: DecathlonDataModule
+
+  settings:
+    data_root: data/neodata/dicom
+    data_list: data/neodata/datalist_b_cv.json
+
+  training:
+    data_list_key: 
+      - fold_0
+      - fold_1
+      - fold_2
+      - fold_3
+      - fold_4
+      - fold_5
+      - fold_6
+      - fold_7
+    transforms:
+    - name: LoadImaged
+      args:
+        keys: image_front_combined 
+        ensure_channel_first: True
+        reader: PydicomReader
+    - name: Resized
+      args:
+        keys: image_front_combined
+        spatial_size: [512, 512]
+    - name: ScaleIntensityd
+      args:
+        keys: image_front_combined
+    - name: FixHorizontalFlipd
+      path: custom.transforms.fix_horizontal_flip
+      args:
+        key: image_front_combined
+        spatial_axis: 0
+        model_weight: custom/transforms/flip_combined.ckpt
+        model_config:
+          name: DenseNet121
+          args:
+            spatial_dims: 2
+            in_channels: 1
+            out_channels: 1
+            pretrained: False
+    # - name: HeartSegmentationd
+    #   path: custom.transforms.heart_seg
+    - name: LoadImaged
+      args:
+        keys: image_front_soft
+        ensure_channel_first: True
+        reader: PydicomReader
+    - name: Resized
+      args:
+        keys: image_front_soft
+        spatial_size: [512, 512]
+    - name: ScaleIntensityd
+      args:
+        keys: image_front_soft
+    - name: FixHorizontalFlipd
+      path: custom.transforms.fix_horizontal_flip
+      args:
+        key: image_front_soft
+        spatial_axis: 0
+        model_weight: custom/transforms/flip_soft.ckpt
+        model_config:
+          name: DenseNet121
+          args:
+            spatial_dims: 2
+            in_channels: 1
+            out_channels: 1
+            pretrained: False
+    - name: LoadImaged
+      args:
+        keys: image_front_hard
+        ensure_channel_first: True
+        reader: PydicomReader
+    - name: Resized
+      args:
+        keys: image_front_hard
+        spatial_size: [512, 512]
+    - name: ScaleIntensityd
+      args:
+        keys: image_front_hard
+    - name: FixHorizontalFlipd
+      path: custom.transforms.fix_horizontal_flip
+      args:
+        key: image_front_hard
+        spatial_axis: 0
+        model_weight: custom/transforms/flip_hard.ckpt
+        model_config:
+          name: DenseNet121
+          args:
+            spatial_dims: 2
+            in_channels: 1
+            out_channels: 1
+            pretrained: False
+    - name: ConcatItemsd
+      args:
+        keys: [image_front_combined, image_front_soft, image_front_hard]
+        name: image
+    - name: HeartSegmentationd
+      path: custom.transforms.heart_seg
+      args:
+        key: image
+        model_weight: custom/transforms/heart_seg.ckpt
+        model_config:
+          name: DeepLabV3Plus
+          path: segmentation_models_pytorch
+          args:
+            in_channels: 3
+            classes: 6
+            encoder_name: tu-resnest50d
+            encoder_weights: None
+
+    # - name: RandAdjustContrastd
+    #   args:
+    #     keys: image
+    #     prob: 1.0
+    #     gamma: [0.5, 2.0]
+    - name: RandGaussianNoised
+      args:
+        keys: image
+        prob: 1.0
+        mean: 0
+        std: 0.05
+    - name: RandAffined
+      args:
+        keys: [image]
+        prob: 1.0
+        rotate_range: 0.25
+        shear_range: 0.2
+        translate_range: 0.1
+        scale_range: 0.2
+        padding_mode: zeros
+    - name: CopyItemsd
+      args:
+        keys: [cac_score]
+        names: [label]
+    - name: AsDiscreted
+      args:
+        keys: [label]
+        threshold: 400
+    - name: EnsureTyped
+      args:
+        keys: [image, label]
+        dtype: float32
+        track_meta: False
+    - name: Unsqueezed
+      args:
+        keys: [label]
+        dim: -1
+
+    dataset:
+      name: CacheDataset
+      args:
+        cache_rate: 1.0
+        num_workers: 8
+
+    dataloader:
+      name: DataLoader
+      args:
+        batch_size: 4
+        # shuffle: True
+        sampler:
+          name: CACSampler
+          path: custom.sampler.ratio
+          args:
+            threshold: 400
+        pin_memory: False
+        num_workers: 16
+
+  validation:
+    data_list_key: 
+      - fold_8
+    transforms:
+    - name: LoadImaged
+      args:
+        keys: image_front_combined
+        ensure_channel_first: True
+        reader: PydicomReader
+    - name: Resized
+      args:
+        keys: image_front_combined
+        spatial_size: [512, 512]
+    - name: ScaleIntensityd
+      args:
+        keys: image_front_combined
+    - name: FixHorizontalFlipd
+      path: custom.transforms.fix_horizontal_flip
+      args:
+        key: image_front_combined
+        spatial_axis: 0
+        model_weight: custom/transforms/flip_combined.ckpt
+        model_config:
+          name: DenseNet121
+          args:
+            spatial_dims: 2
+            in_channels: 1
+            out_channels: 1
+            pretrained: False
+    - name: LoadImaged
+      args:
+        keys: image_front_soft
+        ensure_channel_first: True
+        reader: PydicomReader
+    - name: Resized
+      args:
+        keys: image_front_soft
+        spatial_size: [512, 512]
+    - name: ScaleIntensityd
+      args:
+        keys: image_front_soft
+    - name: FixHorizontalFlipd
+      path: custom.transforms.fix_horizontal_flip
+      args:
+        key: image_front_soft
+        spatial_axis: 0
+        model_weight: custom/transforms/flip_soft.ckpt
+        model_config:
+          name: DenseNet121
+          args:
+            spatial_dims: 2
+            in_channels: 1
+            out_channels: 1
+            pretrained: False
+    - name: LoadImaged
+      args:
+        keys: image_front_hard
+        ensure_channel_first: True
+        reader: PydicomReader
+    - name: Resized
+      args:
+        keys: image_front_hard
+        spatial_size: [512, 512]
+    - name: ScaleIntensityd
+      args:
+        keys: image_front_hard
+    - name: FixHorizontalFlipd
+      path: custom.transforms.fix_horizontal_flip
+      args:
+        key: image_front_hard
+        spatial_axis: 0
+        model_weight: custom/transforms/flip_hard.ckpt
+        model_config:
+          name: DenseNet121
+          args:
+            spatial_dims: 2
+            in_channels: 1
+            out_channels: 1
+            pretrained: False
+    - name: ConcatItemsd
+      args:
+        keys: [image_front_combined, image_front_soft, image_front_hard]
+        name: image
+    - name: HeartSegmentationd
+      path: custom.transforms.heart_seg
+      args:
+        key: image
+        model_weight: custom/transforms/heart_seg.ckpt
+        model_config:
+          name: DeepLabV3Plus
+          path: segmentation_models_pytorch
+          args:
+            in_channels: 3
+            classes: 6
+            encoder_name: tu-resnest50d
+            encoder_weights: None
+    - name: CopyItemsd
+      args:
+        keys: [cac_score]
+        names: [label]
+    - name: AsDiscreted
+      args:
+        keys: [label]
+        threshold: 400
+    - name: EnsureTyped
+      args:
+        keys: [image, label]
+        dtype: float32
+        track_meta: False
+    - name: Unsqueezed
+      args:
+        keys: [label]
+        dim: -1
+
+    dataset:
+      name: CacheDataset
+      args:
+        cache_rate: 1.0
+        num_workers: 8
+
+    dataloader:
+      name: DataLoader
+      args:
+        batch_size: 20
+        pin_memory: False
+        num_workers: 8

@@ -1,0 +1,194 @@
+trainer:
+  settings:
+    accelerator: gpu
+    devices:
+      - 1
+
+    amp_backend: apex
+    amp_level: O1
+    benchmark: True
+
+    accumulate_grad_batches: 6
+    max_epochs: 32
+
+  callbacks:
+    - name: ModelCheckpoint
+      args:
+        filename: best_model
+        monitor: acc_val
+        mode: max
+        save_last: true
+        save_top_k: 1
+
+workflow:
+  name: SupervisedLearningV2
+  settings:
+    scheduler:
+      interval: epoch
+      frequency: 1
+    decollate:
+      validation: [label, pred]
+      predict: [image3, image3_meta_dict, pred]
+
+  components:
+    model:
+      name: DenseNet121
+      input_keys: image3
+      output_keys: pred
+      args:
+        spatial_dims: 2
+        in_channels: 1
+        out_channels: 1
+        pretrained: True
+
+    loss:
+      - name: BCEWithLogitsLoss
+        input_keys: [pred, label]
+
+    optimizer:
+      name: AdamW
+      args:
+        lr: 3.0e-4
+        weight_decay: 1.0e-5
+        amsgrad: true
+
+    scheduler:
+      name: CosineAnnealingWarmRestarts
+      args:
+        T_0: 4
+        T_mult: 1
+
+    post_transforms:
+      validation:
+        - name: Activationsd
+          args:
+            keys: pred
+            sigmoid: True
+        - name: AsDiscreted
+          args:
+            keys: pred
+            threshold: 0.5
+
+    metrics:
+      validation:
+        - name: Accuracy
+          log_label: acc_val
+          input_keys: [pred, label]
+          args:
+            task: binary
+
+data:
+  name: DecathlonDataModule
+
+  settings:
+    data_list: /neodata/oxr/tmuh/datalist.json
+    data_root: /neodata/oxr/tmuh
+
+  training:
+    data_list_key:
+      - fold_0
+      - fold_1
+      - fold_2
+      - fold_3
+    transforms:
+      - name: LoadImaged
+        args:
+          keys: image3
+          ensure_channel_first: True
+          reader: PydicomReader
+      - name: Resized
+        args:
+          keys: image3
+          spatial_size: [512, 512]
+      - name: ScaleIntensityd
+        args:
+          keys: image3
+      - name: SpatialCropd
+        args:
+          keys: image3
+          roi_start: [50, 0]
+          roi_end: [462, 512]
+      - name: BorderPadd
+        args:
+          keys: image3
+          spatial_border: [50, 50, 0, 0]
+      - name: RandFlipWithLabeld
+        path: custom.transforms.flip_with_label
+        args:
+          image_key: image3
+          label_key: label
+      - name: RandAdjustContrastd
+        args:
+          keys: image3
+          prob: 1.0
+          gamma: [0.5, 2.0]
+      - name: RandGaussianNoised
+        args:
+          keys: image3
+          prob: 1.0
+          mean: 0
+          std: 0.05
+      - name: RandAffined
+        args:
+          keys: image3
+          prob: 1.0
+          rotate_range: 0.25
+          shear_range: 0.2
+          translate_range: 0.1
+          scale_range: 0.2
+          padding_mode: zeros
+      - name: EnsureTyped
+        args:
+          keys: [image3, label]
+          dtype: float32
+    dataset:
+      name: CacheDataset
+    dataloader:
+      name: DataLoader
+      args:
+        batch_size: 16
+        shuffle: True
+        num_workers: 8
+
+  validation:
+    data_list_key:
+      - fold_4
+    transforms:
+      - name: LoadImaged
+        args:
+          keys: image3
+          ensure_channel_first: True
+          reader: PydicomReader
+      - name: Resized
+        args:
+          keys: image3
+          spatial_size: [512, 512]
+      - name: ScaleIntensityd
+        args:
+          keys: image3
+      - name: SpatialCropd
+        args:
+          keys: image3
+          roi_start: [50, 0]
+          roi_end: [462, 512]
+      - name: BorderPadd
+        args:
+          keys: image3
+          spatial_border: [50, 50, 0, 0]
+      - name: RandFlipWithLabeld
+        path: custom.transforms.flip_with_label
+        args:
+          image_key: image3
+          label_key: label
+      - name: EnsureTyped
+        args:
+          keys: [image3, label]
+          dtype: float32
+    dataset:
+      name: CacheDataset
+    dataloader:
+      name: DataLoader
+      argspp:
+        batch_size: 32
+        shuffle: false
+        num_workers: 8

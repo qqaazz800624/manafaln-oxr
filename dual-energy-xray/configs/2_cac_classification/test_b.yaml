@@ -1,0 +1,179 @@
+trainer:
+  settings:
+    accelerator: gpu
+    devices: [1]
+
+  callbacks:
+  - name: ConfusionMatrixSaver
+    args:
+      task: binary
+      output_file: data/confusion_matrix.png
+      threshold: 0.45
+
+workflow:
+  name: SupervisedLearningV2
+
+  components:
+    model:
+      # name: DenseNet121
+      # args:
+      #   spatial_dims: 2
+      #   in_channels: 3
+      #   out_channels: 1
+      #   pretrained: True
+      name: EfficientNetBN
+      args:
+        model_name: efficientnet-b0
+        in_channels: 3
+        num_classes: 1
+        spatial_dims: 2
+        pretrained: True
+
+    post_transforms:
+      validation:
+      - name: Activationsd
+        args:
+          keys: preds
+          sigmoid: True
+
+    metrics:
+      validation:
+      - name: CumulativeBootstrapper
+        log_label: val_auc
+        args:
+          quantile: [0.025, 0.975]
+          metric:
+            name: AUROC
+            args:
+              task: binary
+
+data:
+  name: DecathlonDataModule
+
+  settings:
+    data_root: data/neodata/dicom
+    data_list: data/neodata/datalist_b_cv.json
+
+  validation:
+    data_list_key: 
+      - fold_9
+    transforms:
+    - name: LoadImaged
+      args:
+        keys: image_front_combined
+        ensure_channel_first: True
+        reader: PydicomReader
+    - name: Resized
+      args:
+        keys: image_front_combined
+        spatial_size: [512, 512]
+    - name: ScaleIntensityd
+      args:
+        keys: image_front_combined
+    - name: FixHorizontalFlipd
+      path: custom.transforms.fix_horizontal_flip
+      args:
+        key: image_front_combined
+        spatial_axis: 0
+        model_weight: custom/transforms/flip_combined.ckpt
+        model_config:
+          name: DenseNet121
+          args:
+            spatial_dims: 2
+            in_channels: 1
+            out_channels: 1
+            pretrained: False
+    - name: LoadImaged
+      args:
+        keys: image_front_soft
+        ensure_channel_first: True
+        reader: PydicomReader
+    - name: Resized
+      args:
+        keys: image_front_soft
+        spatial_size: [512, 512]
+    - name: ScaleIntensityd
+      args:
+        keys: image_front_soft
+    - name: FixHorizontalFlipd
+      path: custom.transforms.fix_horizontal_flip
+      args:
+        key: image_front_soft
+        spatial_axis: 0
+        model_weight: custom/transforms/flip_soft.ckpt
+        model_config:
+          name: DenseNet121
+          args:
+            spatial_dims: 2
+            in_channels: 1
+            out_channels: 1
+            pretrained: False
+    - name: LoadImaged
+      args:
+        keys: image_front_hard
+        ensure_channel_first: True
+        reader: PydicomReader
+    - name: Resized
+      args:
+        keys: image_front_hard
+        spatial_size: [512, 512]
+    - name: ScaleIntensityd
+      args:
+        keys: image_front_hard
+    - name: FixHorizontalFlipd
+      path: custom.transforms.fix_horizontal_flip
+      args:
+        key: image_front_hard
+        spatial_axis: 0
+        model_weight: custom/transforms/flip_hard.ckpt
+        model_config:
+          name: DenseNet121
+          args:
+            spatial_dims: 2
+            in_channels: 1
+            out_channels: 1
+            pretrained: False
+    - name: ConcatItemsd
+      args:
+        keys: [image_front_combined, image_front_soft, image_front_hard]
+        name: image
+    - name: HeartSegmentationd
+      path: custom.transforms.heart_seg
+      args:
+        key: image
+        model_weight: custom/transforms/heart_seg.ckpt
+        model_config:
+          name: DeepLabV3Plus
+          path: segmentation_models_pytorch
+          args:
+            in_channels: 3
+            classes: 6
+            encoder_name: tu-resnest50d
+            encoder_weights: None
+    - name: AsDiscreted
+      args:
+        keys: [cac_score]
+        threshold: 400
+    - name: EnsureTyped
+      args:
+        keys: [image, cac_score]
+        dtype: float32
+        track_meta: False
+    - name: CopyItemsd
+      args:
+        keys: [cac_score]
+        names: [label]
+    - name: Unsqueezed
+      args:
+        keys: [label]
+        dim: -1
+
+    dataset:
+      name: Dataset
+
+    dataloader:
+      name: DataLoader
+      args:
+        batch_size: 4
+        pin_memory: False
+        num_workers: 8

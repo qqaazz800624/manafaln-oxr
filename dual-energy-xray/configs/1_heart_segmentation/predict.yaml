@@ -1,0 +1,203 @@
+trainer:
+  settings:
+    accelerator: gpu
+    devices:
+      - 1
+
+    amp_backend: apex
+    amp_level: O1
+    benchmark: True
+
+    # limit_val_batches: 1
+
+  callbacks:
+    - name: ModelSummary
+      args:
+        max_depth: 2
+
+workflow:
+  name: SupervisedLearningV2
+  settings:
+    scheduler:
+      interval: epoch
+      frequency: 1
+    decollate:
+      predict: [image_front_combined, image_front_combined_meta_dict, pred]
+
+  components:
+    model:
+      name: DeepLabV3Plus
+      path: segmentation_models_pytorch
+      input_keys: image
+      output_keys: pred
+      args:
+        in_channels: 3
+        classes: 6
+        encoder_name: tu-resnest50d
+        encoder_weights: null
+
+    post_transforms:
+      predict:
+        - name: Activationsd
+          args:
+            keys: pred
+            sigmoid: True
+        - name: AsDiscreted
+          args:
+            keys: pred
+            threshold: 0.5
+        - name: OverlayMaskd
+          args:
+            image_keys: image_front_combined
+            mask_keys: pred
+            colors: '#7f007f'
+            alpha: 0.25
+            indices: 2
+        - name: SaveImaged
+          args:
+            keys: image_front_combined
+            meta_keys: image_front_combined_meta_dict
+            output_postfix: pred
+            separate_folder: false
+            output_dir: /neodata/oxr/innocare/pred
+            data_root_dir: /neodata/oxr/innocare/dicom
+            print_log: false
+            output_ext: png
+            output_dtype: uint8
+            scale: 255
+            resample: true
+
+data:
+  name: DecathlonDataModule
+
+  settings:
+    data_list: /neodata/oxr/innocare/datalist.json
+    data_root: /neodata/oxr/innocare/dicom
+
+  predict:
+    data_list_key:
+      - train
+      - valid
+      - test
+    transforms:
+      - name: LoadImaged
+        args:
+          keys: image_front_combined
+          ensure_channel_first: True
+          reader: PydicomReader
+      - name: Resized
+        args:
+          keys: image_front_combined
+          spatial_size: [512, 512]
+      - name: ScaleIntensityd
+        args:
+          keys: image_front_combined
+      - name: FixHorizontalFlipd
+        path: custom.transforms.fix_horizontal_flip
+        args:
+          key: image_front_combined
+          spatial_axis: 0
+          model_weight: custom/transforms/flip_combined.ckpt
+          model_config:
+            name: DenseNet121
+            args:
+              spatial_dims: 2
+              in_channels: 1
+              out_channels: 1
+              pretrained: False
+      - name: SaveImaged
+        args:
+          keys: image_front_combined
+          output_dir: /neodata/oxr/innocare/visual/image
+          data_root_dir: /neodata/oxr/innocare/dicom
+          separate_folder: false
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: LoadImaged
+        args:
+          keys: image_front_soft
+          ensure_channel_first: True
+          reader: PydicomReader
+      - name: Resized
+        args:
+          keys: image_front_soft
+          spatial_size: [512, 512]
+      - name: ScaleIntensityd
+        args:
+          keys: image_front_soft
+      - name: FixHorizontalFlipd
+        path: custom.transforms.fix_horizontal_flip
+        args:
+          key: image_front_soft
+          spatial_axis: 0
+          model_weight: custom/transforms/flip_soft.ckpt
+          model_config:
+            name: DenseNet121
+            args:
+              spatial_dims: 2
+              in_channels: 1
+              out_channels: 1
+              pretrained: False
+      - name: SaveImaged
+        args:
+          keys: image_front_soft
+          output_dir: /neodata/oxr/innocare/visual/image
+          data_root_dir: /neodata/oxr/innocare/dicom
+          separate_folder: false
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: LoadImaged
+        args:
+          keys: image_front_hard
+          ensure_channel_first: True
+          reader: PydicomReader
+      - name: Resized
+        args:
+          keys: image_front_hard
+          spatial_size: [512, 512]
+      - name: ScaleIntensityd
+        args:
+          keys: image_front_hard
+      - name: FixHorizontalFlipd
+        path: custom.transforms.fix_horizontal_flip
+        args:
+          key: image_front_hard
+          spatial_axis: 0
+          model_weight: custom/transforms/flip_hard.ckpt
+          model_config:
+            name: DenseNet121
+            args:
+              spatial_dims: 2
+              in_channels: 1
+              out_channels: 1
+              pretrained: False
+      - name: SaveImaged
+        args:
+          keys: image_front_hard
+          output_dir: /neodata/oxr/innocare/visual/image
+          data_root_dir: /neodata/oxr/innocare/dicom
+          separate_folder: false
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: ConcatItemsd
+        args:
+          keys: [image_front_combined, image_front_soft, image_front_hard]
+          name: image
+      - name: EnsureTyped
+        args:
+          keys: image
+          dtype: float32
+    dataset:
+      name: Dataset
+    dataloader:
+      name: DataLoader
+      args:
+        batch_size: 1
+        shuffle: false
+        num_workers: 8

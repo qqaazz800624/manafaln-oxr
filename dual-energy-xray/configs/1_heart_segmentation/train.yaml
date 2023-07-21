@@ -1,0 +1,512 @@
+trainer: &trainer
+  settings:
+    accelerator: gpu
+    devices:
+      - 1
+
+    amp_backend: apex
+    amp_level: O1
+    benchmark: True
+
+    accumulate_grad_batches: 6
+    max_epochs: 32
+
+    # num_sanity_val_steps: 0
+    # fast_dev_run: 1
+    # limit_train_batches: 1
+    # limit_val_batches: 1
+
+  callbacks:
+    - name: LearningRateMonitor
+    - name: ModelCheckpoint
+      args:
+        filename: best_model
+        monitor: dice_loss
+        mode: min
+        save_last: true
+        save_top_k: 1
+    - name: ModelSummary
+      args:
+        max_depth: 2
+
+workflow:
+  trainer: *trainer
+  name: SupervisedLearningV2
+  settings:
+    scheduler:
+      interval: epoch
+      frequency: 1
+    decollate:
+      validation: [label, pred]
+      predict: [image1, image1_meta_dict, pred]
+
+  components:
+    model:
+      name: DeepLabV3Plus
+      path: segmentation_models_pytorch
+      input_keys: image
+      output_keys: pred
+      args:
+        in_channels: 3
+        classes: 6
+        encoder_name: tu-resnest50d
+        encoder_weights: imagenet
+
+    loss:
+      - name: DiceLoss
+        log_label: dice_loss
+        input_keys: [pred, label]
+        args:
+          sigmoid: true
+
+    optimizer:
+      name: AdamW
+      args:
+        lr: 3.0e-4
+        weight_decay: 1.0e-5
+        amsgrad: true
+
+    scheduler:
+      name: CosineAnnealingWarmRestarts
+      args:
+        T_0: 4
+        T_mult: 1
+
+
+    post_transforms:
+      validation:
+        - name: Activationsd
+          args:
+            keys: pred
+            sigmoid: True
+        - name: AsDiscreted
+          args:
+            keys: pred
+            threshold: 0.5
+        - name: SplitDimd
+          args:
+            keys: [pred, label]
+            keepdim: True
+            dim: 0
+            output_postfixes: [Chest_Margin, Lung_Margin, Heart_Margin, Pleural_Effusion, Pneumonia, Nodule]
+
+      predict:
+        - name: Activationsd
+          args:
+            keys: pred
+            sigmoid: True
+        - name: AsDiscreted
+          args:
+            keys: pred
+            threshold: 0.5
+        - name: OverlayMaskd
+          args:
+            image_keys: image1
+            mask_keys: pred
+            colors: ['#ff7f00', '#ff0000', '#7f007f', '#0000ff', '#00ff00', '#ffff00']
+        - name: SaveImaged
+          args:
+            keys: image1
+            meta_keys: image1_meta_dict
+            output_postfix: pred
+            output_dir: /neodata/oxr/tmuh/pred
+            print_log: false
+            output_ext: png
+            output_dtype: uint8
+            scale: 255
+            resample: true
+
+    metrics:
+      validation:
+        - name: MONAI
+          log_label: Dice/val
+          input_keys: [pred, label]
+          args:
+            name: DiceMetric
+        - name: MONAI
+          log_label: Dice/heart_val
+          input_keys: [pred_Heart_Margin, label_Heart_Margin]
+          args:
+            name: DiceMetric
+
+data:
+  name: DecathlonDataModule
+
+  settings:
+    data_list: /neodata/oxr/tmuh/datalist.json
+    data_root: /neodata/oxr/tmuh
+
+  training:
+    data_list_key:
+      - fold_0
+      - fold_1
+      - fold_2
+    transforms:
+      - name: LoadImaged
+        args:
+          keys: image1
+          ensure_channel_first: True
+          reader: PydicomReader
+      - name: Resized
+        args:
+          keys: image1
+          spatial_size: [512, 512]
+      - name: ScaleIntensityd
+        args:
+          keys: image1
+      - name: SaveImaged
+        args:
+          keys: image1
+          output_postfix: c1
+          output_dir: /neodata/oxr/tmuh/visual/image
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: LoadImaged
+        args:
+          keys: image2
+          ensure_channel_first: True
+          reader: PydicomReader
+      - name: Resized
+        args:
+          keys: image2
+          spatial_size: [512, 512]
+      - name: ScaleIntensityd
+        args:
+          keys: image2
+      - name: SaveImaged
+        args:
+          keys: image2
+          output_postfix: c2
+          output_dir: /neodata/oxr/tmuh/visual/image
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: LoadImaged
+        args:
+          keys: image3
+          ensure_channel_first: True
+          reader: PydicomReader
+      - name: Resized
+        args:
+          keys: image3
+          spatial_size: [512, 512]
+      - name: ScaleIntensityd
+        args:
+          keys: image3
+      - name: SaveImaged
+        args:
+          keys: image3
+          output_postfix: c3
+          output_dir: /neodata/oxr/tmuh/visual/image
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: ConcatItemsd
+        args:
+          keys: [image1, image2, image3]
+          name: image
+      - name: LoadJSONd
+        args:
+          keys: label
+      - name: ParseXAnnotationSegmentationLabeld
+        args:
+          keys: label
+          # 'Chest Margin', 'Lung Margin', 'Heart Margin', 'Pleural Effusion', 'Pneumonia', 'Nodule'
+          item_keys: ['#ff7f00', '#ff0000', '#7f007f', '#0000ff', '#00ff00', '#ffff00']
+      - name: Interpolated
+        args:
+          keys: label
+          spatial_size: [512, 512]
+      - name: DeleteItemsd
+        args:
+          keys: label_meta_dict.meta_points
+      - name: OverlayMaskd
+        args:
+          image_keys: image1
+          mask_keys: label
+          names: label_visual
+          colors: ['#ff7f00', '#ff0000', '#7f007f', '#0000ff', '#00ff00', '#ffff00']
+      - name: SaveImaged
+        args:
+          keys: label_visual
+          meta_keys: image1_meta_dict
+          output_postfix: label
+          output_dir: /neodata/oxr/tmuh/visual/label
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: Filld
+        args:
+          keys: label
+      - name: RandAffined
+        args:
+          keys: [image, label]
+          prob: 1.0
+          rotate_range: 0.25
+          shear_range: 0.2
+          translate_range: 0.1
+          scale_range: 0.2
+          padding_mode: zeros
+      - name: EnsureTyped
+        args:
+          keys: [image, label, label_meta_dict]
+          dtype: float32
+    dataset:
+      name: CacheNTransDataset
+      args:
+        cache_n_trans: 20
+        cache_dir: /work/oxr/tmuh/cache
+    dataloader:
+      name: DataLoader
+      args:
+        batch_size: 6
+        shuffle: True
+        num_workers: 6
+        drop_last: True
+
+  validation:
+    data_list_key:
+      - fold_3
+    transforms:
+      - name: LoadImaged
+        args:
+          keys: image1
+          ensure_channel_first: True
+          reader: PydicomReader
+      - name: Resized
+        args:
+          keys: image1
+          spatial_size: [512, 512]
+      - name: ScaleIntensityd
+        args:
+          keys: image1
+      - name: SaveImaged
+        args:
+          keys: image1
+          output_postfix: c1
+          output_dir: /neodata/oxr/tmuh/visual/image
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: LoadImaged
+        args:
+          keys: image2
+          ensure_channel_first: True
+          reader: PydicomReader
+      - name: Resized
+        args:
+          keys: image2
+          spatial_size: [512, 512]
+      - name: ScaleIntensityd
+        args:
+          keys: image2
+      - name: SaveImaged
+        args:
+          keys: image2
+          output_postfix: c2
+          output_dir: /neodata/oxr/tmuh/visual/image
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: LoadImaged
+        args:
+          keys: image3
+          ensure_channel_first: True
+          reader: PydicomReader
+      - name: Resized
+        args:
+          keys: image3
+          spatial_size: [512, 512]
+      - name: ScaleIntensityd
+        args:
+          keys: image3
+      - name: SaveImaged
+        args:
+          keys: image3
+          output_postfix: c3
+          output_dir: /neodata/oxr/tmuh/visual/image
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: ConcatItemsd
+        args:
+          keys: [image1, image2, image3]
+          name: image
+      - name: LoadJSONd
+        args:
+          keys: label
+      - name: ParseXAnnotationSegmentationLabeld
+        args:
+          keys: label
+          # 'Chest Margin', 'Lung Margin', 'Heart Margin', 'Pleural Effusion', 'Pneumonia', 'Nodule'
+          item_keys: ['#ff7f00', '#ff0000', '#7f007f', '#0000ff', '#00ff00', '#ffff00']
+      - name: Interpolated
+        args:
+          keys: label
+          spatial_size: [512, 512]
+      - name: DeleteItemsd
+        args:
+          keys: label_meta_dict.meta_points
+      - name: OverlayMaskd
+        args:
+          image_keys: image1
+          mask_keys: label
+          names: label_visual
+          colors: ['#ff7f00', '#ff0000', '#7f007f', '#0000ff', '#00ff00', '#ffff00']
+      - name: SaveImaged
+        args:
+          keys: label_visual
+          meta_keys: image1_meta_dict
+          output_postfix: label
+          output_dir: /neodata/oxr/tmuh/visual/label
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: Filld
+        args:
+          keys: label
+      - name: EnsureTyped
+        args:
+          keys: [image, label, label_meta_dict]
+          dtype: float32
+    dataset:
+      name: CacheNTransDataset
+      args:
+        cache_n_trans: 20
+        cache_dir: /work/oxr/tmuh/cache
+    dataloader:
+      name: DataLoader
+      args:
+        batch_size: 32
+        shuffle: false
+        num_workers: 16
+
+  predict:
+    data_list_key:
+      - fold_4
+    transforms:
+      - name: LoadImaged
+        args:
+          keys: image1
+          ensure_channel_first: True
+          reader: PydicomReader
+      - name: Resized
+        args:
+          keys: image1
+          spatial_size: [512, 512]
+      - name: ScaleIntensityd
+        args:
+          keys: image1
+      - name: SaveImaged
+        args:
+          keys: image1
+          output_postfix: c1
+          output_dir: /neodata/oxr/tmuh/visual/image
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: LoadImaged
+        args:
+          keys: image2
+          ensure_channel_first: True
+          reader: PydicomReader
+      - name: Resized
+        args:
+          keys: image2
+          spatial_size: [512, 512]
+      - name: ScaleIntensityd
+        args:
+          keys: image2
+      - name: SaveImaged
+        args:
+          keys: image2
+          output_postfix: c2
+          output_dir: /neodata/oxr/tmuh/visual/image
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: LoadImaged
+        args:
+          keys: image3
+          ensure_channel_first: True
+          reader: PydicomReader
+      - name: Resized
+        args:
+          keys: image3
+          spatial_size: [512, 512]
+      - name: ScaleIntensityd
+        args:
+          keys: image3
+      - name: SaveImaged
+        args:
+          keys: image3
+          output_postfix: c3
+          output_dir: /neodata/oxr/tmuh/visual/image
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: ConcatItemsd
+        args:
+          keys: [image1, image2, image3]
+          name: image
+      - name: LoadJSONd
+        args:
+          keys: label
+      - name: ParseXAnnotationSegmentationLabeld
+        args:
+          keys: label
+          # 'Chest Margin', 'Lung Margin', 'Heart Margin', 'Pleural Effusion', 'Pneumonia', 'Nodule'
+          item_keys: ['#ff7f00', '#ff0000', '#7f007f', '#0000ff', '#00ff00', '#ffff00']
+      - name: Interpolated
+        args:
+          keys: label
+          spatial_size: [512, 512]
+      - name: DeleteItemsd
+        args:
+          keys: label_meta_dict.meta_points
+      - name: OverlayMaskd
+        args:
+          image_keys: image1
+          mask_keys: label
+          names: label_visual
+          colors: ['#ff7f00', '#ff0000', '#7f007f', '#0000ff', '#00ff00', '#ffff00']
+      - name: SaveImaged
+        args:
+          keys: label_visual
+          meta_keys: image1_meta_dict
+          output_postfix: label
+          output_dir: /neodata/oxr/tmuh/visual/label
+          print_log: false
+          output_ext: png
+          output_dtype: uint8
+          scale: 255
+      - name: Filld
+        args:
+          keys: label
+      - name: EnsureTyped
+        args:
+          keys: [image, label, label_meta_dict]
+          dtype: float32
+    dataset:
+      name: CacheNTransDataset
+      args:
+        cache_n_trans: 20
+        cache_dir: /work/oxr/tmuh/cache
+    dataloader:
+      name: DataLoader
+      args:
+        batch_size: 1
+        shuffle: false
+        num_workers: 1
