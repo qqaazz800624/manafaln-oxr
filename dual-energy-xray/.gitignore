@@ -7,4 +7,3 @@ playground.py
 *.csv
 *.ckpt
 *__pycache__*
-radiomics
